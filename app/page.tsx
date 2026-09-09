@@ -97,12 +97,14 @@ export default function Home() {
     }
     if (event.key === ' ' || event.key === 'Enter') {
       event.preventDefault();
+      renderer.current?.takeControl();
       reveal(.5, .5);
       return;
     }
     const step = delta[event.key];
     if (!step) return;
     event.preventDefault();
+    renderer.current?.takeControl();
     reveal(Math.max(.1, Math.min(.9, position.current.x + step[0])), Math.max(.09, Math.min(.9, position.current.y + step[1])));
   }
 
@@ -137,7 +139,12 @@ export default function Home() {
         onLostPointerCapture={() => {
           if (drag.current.id !== null) cancelDrag();
         }}
-        onFocus={(event) => { if (event.currentTarget.matches(':focus-visible')) reveal(.5, .5); }}
+        onFocus={(event) => {
+          if (event.currentTarget.matches(':focus-visible')) {
+            renderer.current?.takeControl();
+            reveal(.5, .5);
+          }
+        }}
         onBlur={cancelDrag}
         onKeyDown={keyboard}
       >

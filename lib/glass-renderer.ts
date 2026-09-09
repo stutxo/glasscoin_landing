@@ -37,15 +37,28 @@ vec2 faceCoordinates(vec2 point) {
 }
 
 vec3 glassLight() {
-  // A small, slow light shift during interaction; no sparkle or brightness pulse.
+  // The light stays in world space as the coin rotates beneath it.
   return normalize(intoCoin(vec3(-0.5 + sin(u_time * 0.22) * 0.1, 0.8, 1.2)));
 }
 
 vec3 glassGlimmer(vec3 normal, vec3 ray) {
+  // Reflect a tall studio light in the surface. Its slow drift reveals the
+  // glass even at rest; Fresnel reflection strengthens the grazing edges.
+  vec3 reflected = reflect(ray, normal);
+  vec3 light = normalize(intoCoin(vec3(sin(u_time * 0.19 - 0.6) * 0.65, 0.12, 1.4)));
+  vec3 right = normalize(cross(intoCoin(vec3(0.22, 1.0, 0.0)), light));
+  vec3 up = cross(light, right);
+  float forward = dot(reflected, light);
+  vec2 projected = vec2(dot(reflected, right), dot(reflected, up)) / max(forward, 0.2);
+  float height = (1.0 - smoothstep(0.45, 0.7, abs(projected.y))) * smoothstep(0.1, 0.3, forward);
+  float strip = (1.0 - smoothstep(0.035, 0.085, abs(projected.x))) * height;
+  float halo = (1.0 - smoothstep(0.06, 0.2, abs(projected.x))) * height;
+  float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(normal, -ray), 0.0, 1.0), 5.0);
   vec3 halfway = normalize(glassLight() - ray);
   float reflection = max(0.0, dot(normal, halfway));
-  float highlight = pow(reflection, 90.0) * 0.038 + pow(reflection, 22.0) * 0.006;
-  return vec3(0.78, 0.9, 1.0) * highlight;
+  float highlight = strip * 0.18 * (0.4 + 0.6 * fresnel) + halo * 0.01;
+  highlight += pow(reflection, 90.0) * 0.028;
+  return vec3(0.91, 0.96, 1.0) * highlight;
 }
 
 vec2 edgeCoordinates(float angle, float depth) {
@@ -202,7 +215,8 @@ void main() {
   color += vec3(0.055, 0.071, 0.079) * rim * lens * silhouette;
   float bevel = smoothstep(RADIUS * 0.85, RADIUS, length(hit.xy));
   vec3 faceNormal = normalize(vec3(hit.xy / RADIUS * bevel * 0.85, hit.w * (1.0 - bevel * 0.35)));
-  color += glassGlimmer(faceNormal, ray) * smoothstep(0.035, 0.45, luminance);
+  float reflectionMask = mix(0.2, 1.0, smoothstep(0.035, 0.45, luminance));
+  color += glassGlimmer(faceNormal, ray) * mix(reflectionMask, 1.0, bevel);
   gl_FragColor = vec4(color, 1.0);
 }
 `;
@@ -213,7 +227,10 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
   const current = { ...point };
   const rotation = createCoinMotion();
   let frame = 0;
+  let idleTimer = 0;
+  let paused = document.hidden;
   let previousTime = 0;
+  let lastYaw = 0, lastPitch = 0;
   let time = 0;
   let ready = false;
   let disposed = false;
@@ -235,7 +252,11 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
     const elapsed = previousTime ? Math.min((timestamp - previousTime) / 1000, .05) : 1 / 60;
     previousTime = timestamp;
     rotation.advance(elapsed, motion.matches);
-    onRotate(rotation.yaw, rotation.pitch);
+    if (rotation.yaw !== lastYaw || rotation.pitch !== lastPitch) {
+      lastYaw = rotation.yaw;
+      lastPitch = rotation.pitch;
+      onRotate(lastYaw, lastPitch);
+    }
     const follow = motion.matches ? 1 : 1 - Math.exp(-elapsed * 24);
     const fade = motion.matches ? 1 : 1 - Math.exp(-elapsed * 12);
     current.x += (point.x - current.x) * follow;
@@ -251,11 +272,45 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     if (!motion.matches && (rotation.moving || (ready && (point.active > 0 || current.active > .001)))) schedule();
+    else if (!motion.matches && ready) schedule(true);
     else previousTime = 0;
   }
 
-  function schedule() {
-    if (!frame && !disposed) frame = requestAnimationFrame(render);
+  function schedule(idle = false) {
+    if (disposed || paused) return;
+    if (idle) {
+      // Limit idle reflections to at most 30 fps; interaction resumes full rate.
+      if (!frame && !idleTimer) idleTimer = window.setTimeout(() => {
+        idleTimer = 0;
+        frame = requestAnimationFrame(render);
+      }, 1000 / 30);
+    } else {
+      window.clearTimeout(idleTimer);
+      idleTimer = 0;
+      if (!frame) frame = requestAnimationFrame(render);
+    }
+  }
+
+  function cancelFrame() {
+    cancelAnimationFrame(frame);
+    window.clearTimeout(idleTimer);
+    frame = idleTimer = 0;
+    previousTime = 0;
+  }
+
+  function pause() {
+    paused = true;
+    cancelFrame();
+  }
+
+  function resume() {
+    paused = document.hidden;
+    schedule();
+  }
+
+  function visibilityChanged() {
+    if (document.hidden) pause();
+    else resume();
   }
 
   function resize() {
@@ -296,15 +351,18 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
 
   function fail() {
     ready = false;
-    cancelAnimationFrame(frame);
-    frame = 0;
+    cancelFrame();
     onReady(false);
     schedule();
   }
 
   function contextLost(event: Event) { event.preventDefault(); fail(); }
+  function motionChanged() { if (motion.matches) rotation.cancelHint(); schedule(); }
   canvas.addEventListener('webglcontextlost', contextLost);
-  motion.addEventListener('change', schedule);
+  motion.addEventListener('change', motionChanged);
+  window.addEventListener('blur', pause);
+  window.addEventListener('focus', resume);
+  document.addEventListener('visibilitychange', visibilityChanged);
 
   if (gl) {
     try {
@@ -351,9 +409,9 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
           texture(image!, 0);
           if (gl.getError() !== gl.NO_ERROR) throw new Error('Unable to upload glass texture');
           ready = true;
+          if (!motion.matches) rotation.hint();
           resize();
-          cancelAnimationFrame(frame);
-          frame = 0;
+          cancelFrame();
           render(performance.now());
           onReady(true);
           observer = new ResizeObserver(resize);
@@ -366,6 +424,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
   }
 
   return {
+    takeControl() { rotation.cancelHint(); },
     move(x: number, y: number, active: boolean) {
       if (!point.active && current.active < .01) { current.x = x; current.y = 1 - y; }
       point.x = x;
@@ -392,10 +451,13 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, onReady: (ready: 
     },
     destroy() {
       disposed = true;
-      cancelAnimationFrame(frame);
+      cancelFrame();
       observer?.disconnect();
-      motion.removeEventListener('change', schedule);
+      motion.removeEventListener('change', motionChanged);
       canvas.removeEventListener('webglcontextlost', contextLost);
+      window.removeEventListener('blur', pause);
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', visibilityChanged);
       if (image) { image.onload = null; image.onerror = null; }
       textures.forEach((handle) => gl?.deleteTexture(handle));
       shaders.forEach((shader) => gl?.deleteShader(shader));

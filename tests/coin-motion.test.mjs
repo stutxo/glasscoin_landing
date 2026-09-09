@@ -66,3 +66,84 @@ test('reduced motion and cancellation stop momentum while retaining the pose', (
     assert.equal(coin.moving, false);
   }
 });
+
+test('arrival cue starts face-on, shows a bounded turn, and settles without momentum', () => {
+  const coin = createCoinMotion();
+  coin.hint();
+  close(coin.yaw, 0);
+  coin.advance(.5);
+  close(coin.yaw, 0);
+  let largestTurn = 0;
+  let smallestTurn = 0;
+  for (let i = 0; i < 240; i++) {
+    coin.advance(1 / 60);
+    largestTurn = Math.max(largestTurn, coin.yaw);
+    smallestTurn = Math.min(smallestTurn, coin.yaw);
+    close(coin.pitch, 0);
+  }
+  assert.ok(largestTurn > .5 && largestTurn < .7);
+  assert.ok(smallestTurn < -.15 && smallestTurn > -.3);
+  close(coin.yaw, 0);
+  assert.equal(coin.moving, false);
+  coin.hint();
+  coin.advance(1.5);
+  close(coin.yaw, 0);
+  assert.equal(coin.moving, false);
+});
+
+test('arrival cue follows the same timing at different refresh rates', () => {
+  const slow = createCoinMotion();
+  const fast = createCoinMotion();
+  slow.hint();
+  fast.hint();
+  for (let i = 0; i < 60; i++) slow.advance(1 / 30);
+  for (let i = 0; i < 288; i++) fast.advance(1 / 144);
+  close(slow.yaw, fast.yaw);
+});
+
+test('grabbing during the cue preserves the pose and permanently takes control', () => {
+  for (const cueTime of [.3, 1.4, 2.5]) {
+    const coin = createCoinMotion();
+    coin.hint();
+    coin.advance(cueTime);
+    const before = coin.yaw;
+    coin.start(100);
+    close(coin.yaw, before);
+    coin.drag(.04, 0, 116);
+    const dragged = coin.yaw;
+    assert.ok(dragged > before);
+    coin.release(300, false);
+    coin.advance(4);
+    close(coin.yaw, dragged);
+    coin.hint();
+    coin.advance(2);
+    close(coin.yaw, dragged);
+  }
+});
+
+test('keyboard control or cancellation before the image loads suppresses a late cue', () => {
+  for (const takeControl of [coin => coin.cancelHint(), coin => coin.turn(1), coin => coin.stop(), coin => coin.start(0)]) {
+    const coin = createCoinMotion();
+    takeControl(coin);
+    const before = coin.yaw;
+    coin.hint();
+    coin.advance(2);
+    close(coin.yaw, before);
+    assert.equal(coin.moving, false);
+  }
+});
+
+test('reduced motion stops an arrival cue without snapping or restarting it', () => {
+  for (const cueTime of [0, 1.4]) {
+    const coin = createCoinMotion();
+    coin.hint();
+    coin.advance(cueTime);
+    const before = coin.yaw;
+    coin.advance(.5, true);
+    close(coin.yaw, before);
+    assert.equal(coin.moving, false);
+    coin.hint();
+    coin.advance(4);
+    close(coin.yaw, before);
+  }
+});
